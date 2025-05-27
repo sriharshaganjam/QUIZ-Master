@@ -58,11 +58,11 @@ if uploaded_file:
                     prompt = f"""
 You are an intelligent tutor. Here is a passage from study material:
 
-"""{random_chunk}"""
+\"\"\"{random_chunk}\"\"\"
 
 A student answered the question based on it:
 
-"""{user_answer}"""
+\"\"\"{user_answer}\"\"\"
 
 Evaluate the student’s answer for accuracy, completeness, and relevance to the above content. 
 Provide a score out of 10 and a short explanation.
