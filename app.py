@@ -2,8 +2,13 @@ import streamlit as st
 from sentence_transformers import SentenceTransformer, util
 from openai import OpenAI
 import json
+import re
 
-# --- Load SentenceTransformer embedding model ---
+st.set_page_config(page_title="Quiz Generator", layout="centered")
+
+st.title("📚 AI Quiz Master")
+st.markdown("Generate questions from any content using Mistral + Sentence Transformers.")
+
 @st.cache_resource(show_spinner=False)
 def load_embedding_model():
     try:
@@ -14,14 +19,12 @@ def load_embedding_model():
 
 embedding_model = load_embedding_model()
 
-# --- Mistral API credentials from Streamlit secrets ---
 mistral_api_key = st.secrets.get("mistral", {}).get("api_key")
 mistral_api_base_url = st.secrets.get("mistral", {}).get("base_url", "https://api.mistral.ai/v1")
 
 if not mistral_api_key:
-    st.error("Mistral API key not found. Please add it to `.streamlit/secrets.toml`.")
+    st.error("❌ Mistral API key not found in Streamlit secrets. Please add it to .streamlit/secrets.toml")
 
-# --- Create Mistral API client ---
 @st.cache_resource(show_spinner=False)
 def create_openai_client(api_key, base_url):
     if api_key:
@@ -30,7 +33,18 @@ def create_openai_client(api_key, base_url):
 
 client = create_openai_client(mistral_api_key, mistral_api_base_url)
 
-# --- Cosine Similarity Helper ---
+def clean_and_parse_json(raw_text):
+    try:
+        match = re.search(r"""```json\s*(\{.*?\})\s*```""", raw_text, re.DOTALL)
+        if match:
+            json_text = match.group(1)
+            return json.loads(json_text)
+        else:
+            return json.loads(raw_text)
+    except Exception as e:
+        st.warning(f"⚠️ JSON parse error: {e}")
+        return None
+
 def get_cosine_similarity(source, response, model):
     if model is None:
         return 0.0
@@ -39,75 +53,70 @@ def get_cosine_similarity(source, response, model):
     cosine_sim = util.pytorch_cos_sim(emb1, emb2).item()
     return round(cosine_sim * 100, 2)
 
-# --- MCQ Generator ---
-def generate_mcq_from_pdf(pdf_text, client):
-    if not pdf_text or not client:
-        st.error("PDF content or API client is missing.")
-        return None
+question_mode = st.selectbox("Question Type", ["Multiple Choice", "Essay"])
+input_text = st.text_area("📘 Paste Educational Content (Text)", height=200)
 
-    prompt = f"""
-You are a quiz master. Based on the content below, generate one multiple choice question with exactly 4 options. Clearly indicate the correct answer. 
-Respond in strict JSON format only like this:
+if st.button("🧠 Generate Question"):
+    if not input_text:
+        st.warning("Please enter some text.")
+    elif not client:
+        st.error("Mistral client not initialized.")
+    else:
+        with st.spinner("Generating question..."):
+
+            prompt = f"""
+You are a quiz master. Based on the following text, generate a {"multiple choice" if question_mode == "Multiple Choice" else "short answer"} question in JSON format. 
+Ensure the output is ONLY valid JSON.
+
+Text:
+"""{input_text}"""
+
+Format for Multiple Choice:
+```json
 {{
-  "question": "Question here",
+  "question": "What is the ...?",
   "choices": ["A. ...", "B. ...", "C. ...", "D. ..."],
   "answer": "B"
 }}
+```
 
-Content:
-\"\"\"
-{pdf_text}
-\"\"\"
+Format for Essay:
+```json
+{{
+  "question": "Explain the ... in your own words.",
+  "answer": "Expected points or summary"
+}}
+```
+
+Respond with only the JSON, inside a ```json block.
 """
 
-    try:
-        response = client.chat.completions.create(
-            model="mistral-medium",  # Adjust model if needed
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-        )
+            try:
+                response = client.chat.completions.create(
+                    model="mistral-tiny",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.4
+                )
 
-        json_text = response.choices[0].message.content.strip()
-        data = json.loads(json_text)
+                mistral_raw = response.choices[0].message.content
+                question_json = clean_and_parse_json(mistral_raw)
 
-        return {
-            "question": data["question"],
-            "choices": data["choices"],
-            "answer": data["answer"]
-        }
+                if not question_json:
+                    st.error("❌ Mistral did not return valid JSON. Possibly missing keys.")
+                else:
+                    st.success("✅ Question Generated!")
 
-    except json.JSONDecodeError:
-        st.error("❌ Mistral did not return valid JSON. Possibly missing the 'choices' key.")
-        st.code(response.choices[0].message.content)
-    except Exception as e:
-        st.error(f"🚨 Error generating MCQ: {e}")
+                    st.markdown(f"**Question:** {question_json['question']}")
 
-    return None
+                    if "choices" in question_json:
+                        for choice in question_json["choices"]:
+                            st.write(f"- {choice}")
+                        st.markdown(f"**Answer:** {question_json['answer']}")
+                    else:
+                        st.markdown(f"**Expected Answer:** {question_json['answer']}")
 
-# --- Streamlit UI ---
-st.title("📘 AI Quiz Master")
-st.write("Upload your study PDF and generate quiz questions powered by Mistral + SentenceTransformer.")
+                    similarity = get_cosine_similarity(input_text, question_json['question'], embedding_model)
+                    st.markdown(f"🧠 **Question-Text Similarity:** {similarity}%")
 
-# Upload PDF
-uploaded_file = st.file_uploader("📄 Upload a PDF", type=["pdf"])
-question_type = st.selectbox("📌 Select question type", ["Multiple Choice"])
-
-# Extract text from PDF
-pdf_text = ""
-if uploaded_file is not None:
-    from PyPDF2 import PdfReader
-    reader = PdfReader(uploaded_file)
-    pdf_text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-
-    st.success("✅ PDF content loaded successfully.")
-
-    if st.button("🧠 Generate Question"):
-        if question_type == "Multiple Choice":
-            result = generate_mcq_from_pdf(pdf_text, client)
-            if result:
-                st.subheader("❓ Question")
-                st.markdown(result["question"])
-                st.subheader("🔘 Options")
-                for choice in result["choices"]:
-                    st.markdown(f"- {choice}")
-                st.markdown(f"✅ **Correct Answer:** {result['answer']}")
+            except Exception as e:
+                st.error(f"❌ Error during generation: {e}")
