@@ -84,27 +84,43 @@ def get_random_text_chunk(text, chunk_size=2000):
     else:
         return text[:chunk_size] if len(text) > chunk_size else text
 
+def escape_json_string(text):
+    """Properly escape a string for JSON"""
+    if not text:
+        return ""
+    
+    # Replace problematic characters
+    text = text.replace('\\', '\\\\')  # Escape backslashes first
+    text = text.replace('"', '\\"')    # Escape double quotes
+    text = text.replace('\n', '\\n')   # Escape newlines
+    text = text.replace('\r', '\\r')   # Escape carriage returns
+    text = text.replace('\t', '\\t')   # Escape tabs
+    
+    return text
+
 def clean_and_parse_json(raw_text):
     """Parse JSON from Mistral response, handling various formats and cleaning issues"""
     try:
-        # First, try to find JSON within code blocks
-        json_match = re.search(r'```json\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
+        # Remove any markdown code blocks
+        json_text = re.sub(r'```json\s*', '', raw_text)
+        json_text = re.sub(r'```\s*$', '', json_text)
+        
+        # Find the JSON object
+        json_match = re.search(r'(\{.*\})', json_text, re.DOTALL)
         if json_match:
             json_text = json_match.group(1)
-        else:
-            # Try to find JSON without code blocks
-            json_match = re.search(r'(\{.*?\})', raw_text, re.DOTALL)
-            if json_match:
-                json_text = json_match.group(1)
-            else:
-                json_text = raw_text
         
-        # Clean the JSON text to handle common issues
-        json_text = clean_json_string(json_text)
+        # Clean and parse
+        json_text = json_text.strip()
         
-        return json.loads(json_text)
-        
-    except json.JSONDecodeError as e:
+        # Try parsing first
+        try:
+            return json.loads(json_text)
+        except json.JSONDecodeError:
+            # If parsing fails, try to fix common issues
+            return fix_and_parse_json(json_text)
+            
+    except Exception as e:
         st.warning(f"⚠️ JSON parse error: {e}")
         st.text("Raw response:")
         st.code(raw_text[:500] + "..." if len(raw_text) > 500 else raw_text)
@@ -112,52 +128,46 @@ def clean_and_parse_json(raw_text):
         # Try to extract question and answer manually as fallback
         return extract_question_answer_fallback(raw_text)
 
-def clean_json_string(json_str):
-    """Clean JSON string to handle common formatting issues"""
-    # Remove any leading/trailing whitespace
-    json_str = json_str.strip()
+def fix_and_parse_json(json_text):
+    """Try to fix common JSON issues and parse"""
+    try:
+        # Method 1: Try to extract and rebuild the JSON structure
+        question_match = re.search(r'"question"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', json_text)
+        answer_match = re.search(r'"answer"\s*:\s*"([^"]*)"', json_text)
+        choices_match = re.search(r'"choices"\s*:\s*\[(.*?)\]', json_text, re.DOTALL)
+        
+        if question_match and answer_match:
+            question = question_match.group(1)
+            answer = answer_match.group(1)
+            
+            result = {
+                "question": question,
+                "answer": answer
+            }
+            
+            if choices_match:
+                # Extract choices more carefully
+                choices_str = choices_match.group(1)
+                choices = []
+                
+                # Find all quoted strings in the choices array
+                choice_matches = re.findall(r'"([^"]*(?:\\.[^"]*)*)"', choices_str)
+                choices = choice_matches
+                
+                if choices:
+                    result["choices"] = choices
+            
+            return result
+            
+    except Exception as e:
+        st.error(f"Error in fix_and_parse_json: {e}")
     
-    # Only remove problematic control characters that break JSON parsing
-    # Keep normal characters like quotes, commas, colons intact
-    json_str = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', json_str)
-    
-    # Fix any trailing commas before closing braces/brackets
-    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-    
-    return json_str
+    return None
 
 def extract_question_answer_fallback(raw_text):
     """Fallback method to extract question and answer when JSON parsing fails"""
     try:
-        # For multiple choice questions
-        if 'choices' in raw_text.lower():
-            question_match = re.search(r'"question":\s*"([^"]*)"', raw_text)
-            answer_match = re.search(r'"answer":\s*"([^"]*)"', raw_text)
-            choices_match = re.search(r'"choices":\s*\[(.*?)\]', raw_text, re.DOTALL)
-            
-            if question_match and answer_match and choices_match:
-                # Extract choices
-                choices_str = choices_match.group(1)
-                choices = re.findall(r'"([^"]*)"', choices_str)
-                
-                return {
-                    "question": question_match.group(1),
-                    "answer": answer_match.group(1),
-                    "choices": choices
-                }
-        
-        # For essay questions
-        else:
-            question_match = re.search(r'"question":\s*"([^"]*)"', raw_text)
-            answer_match = re.search(r'"answer":\s*"([^"]*)"', raw_text)
-            
-            if question_match and answer_match:
-                return {
-                    "question": question_match.group(1),
-                    "answer": answer_match.group(1)
-                }
-        
-        # If regex fails, try a more flexible line-by-line approach
+        # More robust extraction
         lines = raw_text.split('\n')
         question = None
         answer = None
@@ -165,18 +175,39 @@ def extract_question_answer_fallback(raw_text):
         
         for line in lines:
             line = line.strip()
-            if '"question"' in line and not question:
-                match = re.search(r'"question":\s*"([^"]*)"', line)
+            
+            # Look for question
+            if 'question' in line.lower() and not question:
+                # Try various patterns
+                patterns = [
+                    r'"question"\s*:\s*"([^"]+)"',
+                    r'question:\s*"([^"]+)"',
+                    r'question:\s*([^,\n]+)',
+                ]
+                for pattern in patterns:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        question = match.group(1).strip()
+                        break
+            
+            # Look for answer
+            elif 'answer' in line.lower() and not answer:
+                patterns = [
+                    r'"answer"\s*:\s*"([^"]+)"',
+                    r'answer:\s*"([^"]+)"',
+                    r'answer:\s*([^,\n]+)',
+                ]
+                for pattern in patterns:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        answer = match.group(1).strip()
+                        break
+            
+            # Look for choices
+            elif any(letter in line for letter in ['A.', 'B.', 'C.', 'D.']):
+                match = re.search(r'([A-D]\.[^"]*)', line)
                 if match:
-                    question = match.group(1)
-            elif '"answer"' in line and not answer:
-                match = re.search(r'"answer":\s*"([^"]*)"', line)
-                if match:
-                    answer = match.group(1)
-            elif '"A.' in line or '"B.' in line or '"C.' in line or '"D.' in line:
-                match = re.search(r'"([ABCD]\.[^"]*)"', line)
-                if match:
-                    choices.append(match.group(1))
+                    choices.append(match.group(1).strip())
         
         if question and answer:
             result = {
@@ -214,57 +245,46 @@ def generate_question(content, question_type):
     
     if question_type == "Multiple Choice":
         prompt = f"""
-You are an expert quiz creator. Create ONE multiple choice question with 4 options based on the content below.
+Create a multiple choice question based on the content below. Return ONLY a valid JSON object with no additional text.
 
-CRITICAL: Return ONLY valid JSON. Use simple language and avoid special characters or complex punctuation.
-
-Format (copy exactly):
-```json
+The JSON must follow this exact structure:
 {{
-  "question": "Your question here",
-  "choices": ["A. First option", "B. Second option", "C. Third option", "D. Fourth option"],
+  "question": "Your question here without quotes inside",
+  "choices": ["A. Option 1", "B. Option 2", "C. Option 3", "D. Option 4"],
   "answer": "A"
 }}
-```
-
-Content:
-{content_chunk}
 
 Rules:
-- Use simple clear language
-- Avoid apostrophes, quotes within text, or complex punctuation  
-- Make one option clearly correct
-- Make other options plausible but wrong
-- Answer should be just the letter: A, B, C, or D
+- Use simple language without apostrophes or internal quotes
+- Make sure the JSON is valid
+- Answer should be just the letter A, B, C, or D
+- Base the question on the content provided
+
+Content:
+{content_chunk[:1500]}
 """
     else:  # Essay question
         prompt = f"""
-You are an expert quiz creator. Based on the following educational content, create ONE essay question.
+Create an essay question based on the content below. Return ONLY a valid JSON object with no additional text.
 
-CRITICAL: Your response must be ONLY valid JSON. Use simple language and avoid special characters, quotes within quotes, or complex punctuation.
-
-Format (copy exactly):
-```json
+The JSON must follow this exact structure:
 {{
-  "question": "Write a clear essay question here",
-  "answer": "List key points: first point, second point, third point, fourth point"
+  "question": "Your essay question here without quotes inside",
+  "answer": "Key points that should be covered in the answer"
 }}
-```
-
-Content:
-{content_chunk}
 
 Rules:
-- Use simple clear language in both question and answer
-- Avoid apostrophes, quotes within the text, or complex punctuation
-- The answer should list 3-5 key concepts separated by commas
-- Focus on main ideas that require explanation
-- Keep sentences simple and direct
+- Use simple language without apostrophes or internal quotes
+- Make sure the JSON is valid
+- Base the question on the content provided
+
+Content:
+{content_chunk[:1500]}
 """
 
     try:
         response = client.chat.completions.create(
-            model="mistral-tiny",
+            model="mistral-small",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             max_tokens=500
@@ -304,7 +324,7 @@ Provide feedback in this format:
     
     try:
         response = client.chat.completions.create(
-            model="mistral-tiny",
+            model="mistral-small",
             messages=[{"role": "user", "content": feedback_prompt}],
             temperature=0.3,
             max_tokens=300
@@ -328,7 +348,7 @@ Provide feedback in this format:
 
 # Initialize session state
 for key in ['current_question', 'current_answer', 'current_choices', 'pdf_content', 
-            'user_answer_mc', 'user_answer_essay', 'show_feedback', 'question_type']:
+            'user_answer_mc', 'user_answer_essay', 'show_feedback', 'current_question_type']:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -389,7 +409,7 @@ if st.session_state.pdf_content:
         st.session_state.show_feedback = False
         st.session_state.user_answer_mc = None
         st.session_state.user_answer_essay = ""
-        st.session_state.question_type = question_type
+        st.session_state.current_question_type = question_type  # Store the selected type
         
         with st.spinner("🤖 Generating question..."):
             question_data = generate_question(st.session_state.pdf_content, question_type)
@@ -409,8 +429,8 @@ if st.session_state.current_question:
     # Display question
     st.markdown(f"**Question:** {st.session_state.current_question}")
     
-    # Answer input based on question type
-    if st.session_state.current_choices:  # Multiple Choice
+    # Answer input based on the STORED question type (not the current selection)
+    if st.session_state.current_question_type == "Multiple Choice" and st.session_state.current_choices:
         st.session_state.user_answer_mc = st.radio(
             "Select your answer:",
             st.session_state.current_choices,
@@ -446,7 +466,7 @@ if st.session_state.current_question:
 if st.session_state.show_feedback:
     st.markdown("### 📊 Evaluation Results")
     
-    if st.session_state.current_choices:  # Multiple Choice
+    if st.session_state.current_question_type == "Multiple Choice" and st.session_state.current_choices:
         if st.session_state.user_answer_mc:
             # Extract letter from choice
             selected_letter = st.session_state.user_answer_mc.split('.')[0]
