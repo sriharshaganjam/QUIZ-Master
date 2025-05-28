@@ -68,8 +68,8 @@ if st.button("🧠 Generate Question"):
 You are a quiz master. Based on the following text, generate a {"multiple choice" if question_mode == "Multiple Choice" else "short answer"} question in JSON format. 
 Ensure the output is ONLY valid JSON.
 
-Text:
-"""{input_text}"""
+f"""Text:
+\"\"\"{input_text}\"\"\"
 
 Format for Multiple Choice:
 ```json
