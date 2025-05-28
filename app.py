@@ -117,57 +117,75 @@ def clean_json_string(json_str):
     # Remove any leading/trailing whitespace
     json_str = json_str.strip()
     
-    # Fix common issues with unescaped quotes in strings
-    # This is a simplified approach - in production, you might want more robust handling
+    # Only remove problematic control characters that break JSON parsing
+    # Keep normal characters like quotes, commas, colons intact
+    json_str = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', json_str)
     
-    # Replace unescaped quotes within string values (basic approach)
-    # This regex looks for quotes that are not preceded by a backslash and are within string values
-    json_str = re.sub(r'(?<!\\)"(?=.*":)', '\\"', json_str)
-    
-    # Remove control characters that can break JSON parsing
-    json_str = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
-    
-    # Fix any trailing commas
-    json_str = re.sub(r',\s*}', '}', json_str)
-    json_str = re.sub(r',\s*]', ']', json_str)
+    # Fix any trailing commas before closing braces/brackets
+    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
     
     return json_str
 
 def extract_question_answer_fallback(raw_text):
     """Fallback method to extract question and answer when JSON parsing fails"""
     try:
-        # Look for question pattern
-        question_match = re.search(r'"question":\s*"([^"]+)"', raw_text)
-        answer_match = re.search(r'"answer":\s*"([^"]+)"', raw_text)
+        # For multiple choice questions
+        if 'choices' in raw_text.lower():
+            question_match = re.search(r'"question":\s*"([^"]*)"', raw_text)
+            answer_match = re.search(r'"answer":\s*"([^"]*)"', raw_text)
+            choices_match = re.search(r'"choices":\s*\[(.*?)\]', raw_text, re.DOTALL)
+            
+            if question_match and answer_match and choices_match:
+                # Extract choices
+                choices_str = choices_match.group(1)
+                choices = re.findall(r'"([^"]*)"', choices_str)
+                
+                return {
+                    "question": question_match.group(1),
+                    "answer": answer_match.group(1),
+                    "choices": choices
+                }
         
-        if question_match and answer_match:
-            return {
-                "question": question_match.group(1),
-                "answer": answer_match.group(1)
-            }
+        # For essay questions
+        else:
+            question_match = re.search(r'"question":\s*"([^"]*)"', raw_text)
+            answer_match = re.search(r'"answer":\s*"([^"]*)"', raw_text)
+            
+            if question_match and answer_match:
+                return {
+                    "question": question_match.group(1),
+                    "answer": answer_match.group(1)
+                }
         
-        # If that doesn't work, try a more flexible approach
+        # If regex fails, try a more flexible line-by-line approach
         lines = raw_text.split('\n')
         question = None
         answer = None
+        choices = []
         
         for line in lines:
-            if 'question' in line.lower() and not question:
-                # Extract text after colon or quote
-                match = re.search(r'[:"]\s*([^"]+)', line)
+            line = line.strip()
+            if '"question"' in line and not question:
+                match = re.search(r'"question":\s*"([^"]*)"', line)
                 if match:
-                    question = match.group(1).strip()
-            elif 'answer' in line.lower() and not answer:
-                # Extract text after colon or quote
-                match = re.search(r'[:"]\s*([^"]+)', line)
+                    question = match.group(1)
+            elif '"answer"' in line and not answer:
+                match = re.search(r'"answer":\s*"([^"]*)"', line)
                 if match:
-                    answer = match.group(1).strip()
+                    answer = match.group(1)
+            elif '"A.' in line or '"B.' in line or '"C.' in line or '"D.' in line:
+                match = re.search(r'"([ABCD]\.[^"]*)"', line)
+                if match:
+                    choices.append(match.group(1))
         
         if question and answer:
-            return {
+            result = {
                 "question": question,
                 "answer": answer
             }
+            if choices:
+                result["choices"] = choices
+            return result
         
         return None
         
@@ -196,13 +214,14 @@ def generate_question(content, question_type):
     
     if question_type == "Multiple Choice":
         prompt = f"""
-You are an expert quiz creator. Based on the following educational content, create ONE multiple choice question with 4 options.
+You are an expert quiz creator. Create ONE multiple choice question with 4 options based on the content below.
 
-IMPORTANT: Your response must be ONLY valid JSON in this exact format:
+CRITICAL: Return ONLY valid JSON. Use simple language and avoid special characters or complex punctuation.
 
+Format (copy exactly):
 ```json
 {{
-  "question": "Your question here?",
+  "question": "Your question here",
   "choices": ["A. First option", "B. Second option", "C. Third option", "D. Fourth option"],
   "answer": "A"
 }}
@@ -211,12 +230,12 @@ IMPORTANT: Your response must be ONLY valid JSON in this exact format:
 Content:
 {content_chunk}
 
-Requirements:
-- Make the question challenging but fair
-- Ensure only one option is clearly correct
-- Make incorrect options plausible but distinctly wrong
-- Base the question on key concepts from the content
-- Keep question and options concise but clear
+Rules:
+- Use simple clear language
+- Avoid apostrophes, quotes within text, or complex punctuation  
+- Make one option clearly correct
+- Make other options plausible but wrong
+- Answer should be just the letter: A, B, C, or D
 """
     else:  # Essay question
         prompt = f"""
