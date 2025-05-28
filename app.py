@@ -85,26 +85,94 @@ def get_random_text_chunk(text, chunk_size=2000):
         return text[:chunk_size] if len(text) > chunk_size else text
 
 def clean_and_parse_json(raw_text):
-    """Parse JSON from Mistral response, handling various formats"""
+    """Parse JSON from Mistral response, handling various formats and cleaning issues"""
     try:
-        # Try to find JSON within code blocks
+        # First, try to find JSON within code blocks
         json_match = re.search(r'```json\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
         if json_match:
             json_text = json_match.group(1)
-            return json.loads(json_text)
+        else:
+            # Try to find JSON without code blocks
+            json_match = re.search(r'(\{.*?\})', raw_text, re.DOTALL)
+            if json_match:
+                json_text = json_match.group(1)
+            else:
+                json_text = raw_text
         
-        # Try to find JSON without code blocks
-        json_match = re.search(r'(\{.*?\})', raw_text, re.DOTALL)
-        if json_match:
-            json_text = json_match.group(1)
-            return json.loads(json_text)
+        # Clean the JSON text to handle common issues
+        json_text = clean_json_string(json_text)
         
-        # Try parsing the entire response as JSON
-        return json.loads(raw_text)
+        return json.loads(json_text)
+        
     except json.JSONDecodeError as e:
         st.warning(f"⚠️ JSON parse error: {e}")
         st.text("Raw response:")
-        st.code(raw_text)
+        st.code(raw_text[:500] + "..." if len(raw_text) > 500 else raw_text)
+        
+        # Try to extract question and answer manually as fallback
+        return extract_question_answer_fallback(raw_text)
+
+def clean_json_string(json_str):
+    """Clean JSON string to handle common formatting issues"""
+    # Remove any leading/trailing whitespace
+    json_str = json_str.strip()
+    
+    # Fix common issues with unescaped quotes in strings
+    # This is a simplified approach - in production, you might want more robust handling
+    
+    # Replace unescaped quotes within string values (basic approach)
+    # This regex looks for quotes that are not preceded by a backslash and are within string values
+    json_str = re.sub(r'(?<!\\)"(?=.*":)', '\\"', json_str)
+    
+    # Remove control characters that can break JSON parsing
+    json_str = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
+    
+    # Fix any trailing commas
+    json_str = re.sub(r',\s*}', '}', json_str)
+    json_str = re.sub(r',\s*]', ']', json_str)
+    
+    return json_str
+
+def extract_question_answer_fallback(raw_text):
+    """Fallback method to extract question and answer when JSON parsing fails"""
+    try:
+        # Look for question pattern
+        question_match = re.search(r'"question":\s*"([^"]+)"', raw_text)
+        answer_match = re.search(r'"answer":\s*"([^"]+)"', raw_text)
+        
+        if question_match and answer_match:
+            return {
+                "question": question_match.group(1),
+                "answer": answer_match.group(1)
+            }
+        
+        # If that doesn't work, try a more flexible approach
+        lines = raw_text.split('\n')
+        question = None
+        answer = None
+        
+        for line in lines:
+            if 'question' in line.lower() and not question:
+                # Extract text after colon or quote
+                match = re.search(r'[:"]\s*([^"]+)', line)
+                if match:
+                    question = match.group(1).strip()
+            elif 'answer' in line.lower() and not answer:
+                # Extract text after colon or quote
+                match = re.search(r'[:"]\s*([^"]+)', line)
+                if match:
+                    answer = match.group(1).strip()
+        
+        if question and answer:
+            return {
+                "question": question,
+                "answer": answer
+            }
+        
+        return None
+        
+    except Exception as e:
+        st.error(f"Fallback extraction failed: {e}")
         return None
 
 def get_cosine_similarity(text1, text2, model):
@@ -152,25 +220,27 @@ Requirements:
 """
     else:  # Essay question
         prompt = f"""
-You are an expert quiz creator. Based on the following educational content, create ONE essay question that requires understanding and explanation.
+You are an expert quiz creator. Based on the following educational content, create ONE essay question.
 
-IMPORTANT: Your response must be ONLY valid JSON in this exact format:
+CRITICAL: Your response must be ONLY valid JSON. Use simple language and avoid special characters, quotes within quotes, or complex punctuation.
 
+Format (copy exactly):
 ```json
 {{
-  "question": "Your essay question here?",
-  "answer": "Key points that should be covered in a good answer: point 1, point 2, point 3, etc."
+  "question": "Write a clear essay question here",
+  "answer": "List key points: first point, second point, third point, fourth point"
 }}
 ```
 
 Content:
 {content_chunk}
 
-Requirements:
-- Create a question that requires explanation or analysis
-- The answer should list 3-5 key points that demonstrate understanding
-- Focus on concepts that require critical thinking
-- Keep the question clear and specific
+Rules:
+- Use simple clear language in both question and answer
+- Avoid apostrophes, quotes within the text, or complex punctuation
+- The answer should list 3-5 key concepts separated by commas
+- Focus on main ideas that require explanation
+- Keep sentences simple and direct
 """
 
     try:
