@@ -305,7 +305,7 @@ def evaluate_essay_answer(user_answer, expected_answer, question, model):
     # Calculate similarity score
     similarity_score = get_cosine_similarity(expected_answer, user_answer, model)
     
-    # Generate detailed feedback using Mistral
+    # Generate detailed feedback using Mistral (without including score in the feedback)
     feedback_prompt = f"""
 Compare the following student answer with the expected answer and provide constructive feedback.
 
@@ -316,11 +316,11 @@ Expected Answer: {expected_answer}
 Student Answer: {user_answer}
 
 Provide feedback in this format:
-- Score: {similarity_score}%
 - Strengths: What the student got right
 - Areas for improvement: What could be better or what's missing
 - Suggestions: Specific recommendations
-"""
+
+Do not include any score or percentage in your response."""
     
     try:
         response = client.chat.completions.create(
