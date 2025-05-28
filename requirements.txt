@@ -2,3 +2,4 @@ streamlit
 sentence-transformers
 openai
 PyPDF2
+torch
