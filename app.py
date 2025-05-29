@@ -561,10 +561,6 @@ for key in session_keys:
 if 'user_answer_essay' not in st.session_state:
     st.session_state.user_answer_essay = ""
 
-# Initialize advanced components
-if 'question_generator' not in st.session_state:
-    st.session_state.question_generator = QuestionGenerator()
-
 # Main interface
 st.markdown("### 📁 Upload Learning Material")
 
@@ -575,6 +571,10 @@ uploaded_file = st.file_uploader(
 )
 
 # Process uploaded file
+# Initialize question generator if not already done
+if 'question_generator' not in st.session_state or st.session_state.question_generator is None:
+    st.session_state.question_generator = QuestionGenerator()
+
 if uploaded_file is not None:
     if st.session_state.get('uploaded_file_name') != uploaded_file.name:
         with st.spinner("🔍 Analyzing PDF content comprehensively..."):
@@ -588,8 +588,9 @@ if uploaded_file is not None:
                 st.session_state.content_analyzer = ContentAnalyzer(extracted_text)
                 st.session_state.content_analyzer.analyze_content(embedding_model)
                 
-                # Reset question generator for new document
-                st.session_state.question_generator.reset_diversity_tracking()
+                # Reset question generator for new document (with safety check)
+                if st.session_state.question_generator is not None:
+                    st.session_state.question_generator.reset_diversity_tracking()
                 
                 st.success(f"✅ Successfully analyzed {uploaded_file.name}")
                 
@@ -644,30 +645,34 @@ if st.session_state.pdf_content and st.session_state.content_analyzer:
         )
     
     if reset_diversity:
-        st.session_state.question_generator.reset_diversity_tracking()
-        st.success("✅ Diversity tracking reset! All content sections are now available again.")
+        if st.session_state.question_generator is not None:
+            st.session_state.question_generator.reset_diversity_tracking()
+            st.success("✅ Diversity tracking reset! All content sections are now available again.")
+        else:
+            st.error("Question generator not initialized.")
     
-    # Show question generation stats
-    stats = st.session_state.question_generator.get_question_stats()
-    if stats.get('total_questions', 0) > 0:
-        with st.expander("📊 Question Generation Statistics"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**Question Types Generated:**")
-                for q_type, count in stats['question_types'].items():
-                    st.write(f"- {q_type.title()}: {count}")
+    # Show question generation stats (with safety check)
+    if st.session_state.question_generator is not None:
+        stats = st.session_state.question_generator.get_question_stats()
+        if stats.get('total_questions', 0) > 0:
+            with st.expander("📊 Question Generation Statistics"):
+                col1, col2 = st.columns(2)
                 
-                st.write("**Difficulty Levels:**")
-                for level, count in stats['difficulty_levels'].items():
-                    st.write(f"- {level.title()}: {count}")
-            
-            with col2:
-                st.write("**Content Strategies Used:**")
-                for strategy, count in stats['strategies_used'].items():
-                    st.write(f"- {strategy.title()}: {count}")
+                with col1:
+                    st.write("**Question Types Generated:**")
+                    for q_type, count in stats['question_types'].items():
+                        st.write(f"- {q_type.title()}: {count}")
+                    
+                    st.write("**Difficulty Levels:**")
+                    for level, count in stats['difficulty_levels'].items():
+                        st.write(f"- {level.title()}: {count}")
                 
-                st.metric("Sections Covered", f"{stats['unique_sections']}/{len(st.session_state.content_analyzer.sections)}")
+                with col2:
+                    st.write("**Content Strategies Used:**")
+                    for strategy, count in stats['strategies_used'].items():
+                        st.write(f"- {strategy.title()}: {count}")
+                    
+                    st.metric("Sections Covered", f"{stats['unique_sections']}/{len(st.session_state.content_analyzer.sections)}")
     
     if generate_btn:
         # Reset previous state
