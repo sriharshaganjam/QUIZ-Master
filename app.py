@@ -24,8 +24,8 @@ except LookupError:
 
 st.set_page_config(page_title="AI Quiz Master", layout="centered", page_icon="📚")
 
-st.title("📚 AI Quiz Master")
-st.markdown("Generate truly diverse and intelligent questions from any PDF content using advanced AI techniques.")
+st.title("📚 AI Quiz Master For Students To Aid Subject Mastery")
+st.markdown("Auto generate intelligent questions from any PDF using advanced AI techniques & obtain personalized feedback on your submitted answers.")
 
 @st.cache_resource(show_spinner=False)
 def load_embedding_model():
