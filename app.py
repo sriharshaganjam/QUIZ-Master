@@ -5,11 +5,27 @@ from openai import OpenAI
 import json
 import re
 import random
+import hashlib
+from collections import defaultdict
+import nltk
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.corpus import stopwords
+
+# Download required NLTK data
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
 
 st.set_page_config(page_title="AI Quiz Master", layout="centered", page_icon="📚")
 
 st.title("📚 AI Quiz Master")
-st.markdown("Generate intelligent questions from any PDF content using Mistral AI + Sentence Transformers.")
+st.markdown("Generate truly diverse and intelligent questions from any PDF content using advanced AI techniques.")
 
 @st.cache_resource(show_spinner=False)
 def load_embedding_model():
@@ -41,6 +57,422 @@ def create_openai_client(api_key, base_url):
 
 client = create_openai_client(mistral_api_key, mistral_api_base_url)
 
+class ContentAnalyzer:
+    """Advanced content analysis and segmentation"""
+    
+    def __init__(self, text):
+        self.full_text = text
+        self.sections = []
+        self.key_concepts = []
+        self.embeddings = None
+        self.analyzed = False
+    
+    def analyze_content(self, embedding_model=None):
+        """Perform comprehensive content analysis"""
+        if self.analyzed:
+            return
+        
+        # Split into logical sections
+        self.sections = self._split_into_sections()
+        
+        # Extract key concepts
+        self.key_concepts = self._extract_key_concepts()
+        
+        # Generate embeddings for semantic search
+        if embedding_model:
+            self._generate_embeddings(embedding_model)
+        
+        self.analyzed = True
+    
+    def _split_into_sections(self):
+        """Split content into logical sections based on structure"""
+        sections = []
+        
+        # Split by page breaks first
+        pages = self.full_text.split("--- Page")
+        
+        for i, page_content in enumerate(pages):
+            if not page_content.strip():
+                continue
+                
+            # Further split by paragraphs and headers
+            paragraphs = [p.strip() for p in page_content.split('\n\n') if p.strip()]
+            
+            # Group paragraphs into sections (3-5 paragraphs per section)
+            for j in range(0, len(paragraphs), random.randint(3, 5)):
+                section_text = '\n\n'.join(paragraphs[j:j+5])
+                if len(section_text) > 200:  # Only include substantial sections
+                    sections.append({
+                        'content': section_text,
+                        'page': i,
+                        'section_id': len(sections),
+                        'word_count': len(section_text.split()),
+                        'key_sentences': self._extract_key_sentences(section_text)
+                    })
+        
+        return sections
+    
+    def _extract_key_sentences(self, text):
+        """Extract key sentences from a text section"""
+        try:
+            sentences = sent_tokenize(text)
+            # Return sentences that are neither too short nor too long
+            key_sentences = [s for s in sentences if 20 <= len(s.split()) <= 50]
+            return key_sentences[:3]  # Top 3 key sentences
+        except:
+            # Fallback if NLTK fails
+            sentences = text.split('. ')
+            return [s for s in sentences[:3] if len(s.split()) >= 10]
+    
+    def _extract_key_concepts(self):
+        """Extract key concepts and topics from the content"""
+        try:
+            words = word_tokenize(self.full_text.lower())
+            stop_words = set(stopwords.words('english'))
+            
+            # Remove stopwords and short words
+            meaningful_words = [w for w in words if w.isalpha() and len(w) > 3 and w not in stop_words]
+            
+            # Count frequency
+            word_freq = defaultdict(int)
+            for word in meaningful_words:
+                word_freq[word] += 1
+            
+            # Get top concepts
+            top_concepts = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:20]
+            return [concept[0] for concept in top_concepts]
+        except:
+            # Simple fallback
+            words = self.full_text.split()
+            return list(set([w.lower() for w in words if len(w) > 5]))[:20]
+    
+    def _generate_embeddings(self, model):
+        """Generate embeddings for semantic similarity"""
+        try:
+            section_texts = [section['content'] for section in self.sections]
+            self.embeddings = model.encode(section_texts)
+        except Exception as e:
+            st.warning(f"Could not generate embeddings: {e}")
+    
+    def get_diverse_content(self, used_sections=None, strategy='random'):
+        """Get content using different strategies for diversity"""
+        if not self.sections:
+            return self.full_text[:2000]
+        
+        available_sections = self.sections.copy()
+        
+        # Remove already used sections
+        if used_sections:
+            available_sections = [s for s in available_sections if s['section_id'] not in used_sections]
+        
+        if not available_sections:
+            # If all sections used, reset and use semantic diversity
+            available_sections = self.sections.copy()
+            strategy = 'semantic'
+        
+        if strategy == 'random':
+            section = random.choice(available_sections)
+        elif strategy == 'longest':
+            section = max(available_sections, key=lambda x: x['word_count'])
+        elif strategy == 'concept_rich':
+            # Choose section with most key concepts
+            section = max(available_sections, key=lambda x: 
+                        sum(1 for concept in self.key_concepts if concept in x['content'].lower()))
+        elif strategy == 'semantic':
+            # Use embedding similarity to find diverse content
+            if self.embeddings is not None and used_sections:
+                # Find section most different from used ones
+                section = self._find_most_different_section(available_sections, used_sections)
+            else:
+                section = random.choice(available_sections)
+        else:
+            section = random.choice(available_sections)
+        
+        return section['content'], section['section_id']
+    
+    def _find_most_different_section(self, available_sections, used_sections):
+        """Find section most semantically different from used ones"""
+        try:
+            if not self.embeddings:
+                return random.choice(available_sections)
+            
+            max_diff = -1
+            best_section = available_sections[0]
+            
+            for section in available_sections:
+                section_embedding = self.embeddings[section['section_id']]
+                
+                # Calculate average similarity to used sections
+                similarities = []
+                for used_id in used_sections:
+                    if used_id < len(self.embeddings):
+                        used_embedding = self.embeddings[used_id]
+                        sim = util.pytorch_cos_sim(section_embedding, used_embedding).item()
+                        similarities.append(sim)
+                
+                # Lower average similarity = more different
+                avg_similarity = sum(similarities) / len(similarities) if similarities else 0
+                
+                if avg_similarity < max_diff or max_diff == -1:
+                    max_diff = avg_similarity
+                    best_section = section
+            
+            return best_section
+        except:
+            return random.choice(available_sections)
+
+class QuestionGenerator:
+    """Advanced question generation with diversity tracking"""
+    
+    def __init__(self):
+        self.question_types = [
+            'factual', 'analytical', 'comparative', 'application', 
+            'synthesis', 'evaluation', 'definition', 'cause_effect'
+        ]
+        self.difficulty_levels = ['basic', 'intermediate', 'advanced']
+        self.generated_questions = []
+        self.used_sections = set()
+    
+    def generate_diverse_question(self, content_analyzer, client, question_format='Multiple Choice'):
+        """Generate a diverse question using advanced strategies"""
+        
+        # Choose diversity strategy
+        strategies = ['random', 'concept_rich', 'longest', 'semantic']
+        weights = [0.4, 0.3, 0.2, 0.1]  # Prefer random and concept-rich
+        strategy = random.choices(strategies, weights=weights)[0]
+        
+        # Get diverse content
+        content, section_id = content_analyzer.get_diverse_content(
+            used_sections=self.used_sections, 
+            strategy=strategy
+        )
+        
+        # Track used sections
+        self.used_sections.add(section_id)
+        
+        # Choose question type and difficulty
+        question_type = random.choice(self.question_types)
+        difficulty = random.choice(self.difficulty_levels)
+        
+        # Generate question
+        question_data = self._generate_specific_question(
+            content, question_type, difficulty, question_format, client
+        )
+        
+        if question_data:
+            # Add metadata
+            question_data['metadata'] = {
+                'section_id': section_id,
+                'question_type': question_type,
+                'difficulty': difficulty,
+                'strategy': strategy,
+                'content_preview': content[:100] + "..."
+            }
+            self.generated_questions.append(question_data)
+        
+        return question_data
+    
+    def _generate_specific_question(self, content, q_type, difficulty, format_type, client):
+        """Generate question with specific type and difficulty"""
+        
+        # Question type specific prompts
+        type_prompts = {
+            'factual': "Create a question that tests recall of specific facts or information.",
+            'analytical': "Create a question that requires breaking down and analyzing information.",
+            'comparative': "Create a question comparing different concepts or ideas.",
+            'application': "Create a question about applying knowledge to new situations.",
+            'synthesis': "Create a question that combines multiple concepts or ideas.",
+            'evaluation': "Create a question that requires making judgments or assessments.",
+            'definition': "Create a question about defining or explaining key terms.",
+            'cause_effect': "Create a question about cause-and-effect relationships."
+        }
+        
+        difficulty_instructions = {
+            'basic': "Make this a basic level question testing fundamental understanding.",
+            'intermediate': "Make this an intermediate level question requiring some analysis.",
+            'advanced': "Make this an advanced level question requiring deep critical thinking."
+        }
+        
+        if format_type == "Multiple Choice":
+            prompt = f"""
+Create a {difficulty} level {q_type} multiple choice question based on the content below.
+
+Instructions:
+- {type_prompts.get(q_type, 'Create a thoughtful question.')}
+- {difficulty_instructions.get(difficulty, '')}
+- Make the question unique and avoid repetitive patterns
+- Ensure all options are plausible but only one is clearly correct
+- Use varied question structures and phrasings
+
+Return ONLY a valid JSON object:
+{{
+  "question": "Your unique question here",
+  "choices": ["A. Option 1", "B. Option 2", "C. Option 3", "D. Option 4"],
+  "answer": "A"
+}}
+
+Content:
+{content[:1800]}
+"""
+        else:  # Essay question
+            prompt = f"""
+Create a {difficulty} level {q_type} essay question based on the content below.
+
+Instructions:
+- {type_prompts.get(q_type, 'Create a thoughtful question.')}
+- {difficulty_instructions.get(difficulty, '')}
+- Make the question thought-provoking and unique
+- Require comprehensive understanding, not just memorization
+
+Return ONLY a valid JSON object:
+{{
+  "question": "Your unique essay question here",
+  "answer": "Comprehensive key points and concepts that should be addressed"
+}}
+
+Content:
+{content[:1800]}
+"""
+
+        try:
+            response = client.chat.completions.create(
+                model="mistral-small",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.8,  # Higher temperature for more creativity
+                max_tokens=600
+            )
+            
+            raw_response = response.choices[0].message.content
+            return self._clean_and_parse_json(raw_response)
+            
+        except Exception as e:
+            st.error(f"Error generating question: {e}")
+            return None
+    
+    def _clean_and_parse_json(self, raw_text):
+        """Parse JSON from response with robust error handling"""
+        try:
+            # Remove markdown code blocks
+            json_text = re.sub(r'```json\s*', '', raw_text)
+            json_text = re.sub(r'```\s*$', '', json_text)
+            
+            # Find JSON object
+            json_match = re.search(r'(\{.*\})', json_text, re.DOTALL)
+            if json_match:
+                json_text = json_match.group(1)
+            
+            json_text = json_text.strip()
+            
+            try:
+                return json.loads(json_text)
+            except json.JSONDecodeError:
+                return self._fix_and_parse_json(json_text)
+                
+        except Exception as e:
+            st.warning(f"JSON parse error: {e}")
+            return self._extract_question_answer_fallback(raw_text)
+    
+    def _fix_and_parse_json(self, json_text):
+        """Fix common JSON issues"""
+        try:
+            # Extract components with regex
+            question_match = re.search(r'"question"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', json_text)
+            answer_match = re.search(r'"answer"\s*:\s*"([^"]*)"', json_text)
+            choices_match = re.search(r'"choices"\s*:\s*\[(.*?)\]', json_text, re.DOTALL)
+            
+            if question_match and answer_match:
+                result = {
+                    "question": question_match.group(1),
+                    "answer": answer_match.group(1)
+                }
+                
+                if choices_match:
+                    choices_str = choices_match.group(1)
+                    choice_matches = re.findall(r'"([^"]*(?:\\.[^"]*)*)"', choices_str)
+                    if choice_matches:
+                        result["choices"] = choice_matches
+                
+                return result
+        except:
+            pass
+        return None
+    
+    def _extract_question_answer_fallback(self, raw_text):
+        """Fallback extraction method"""
+        try:
+            lines = raw_text.split('\n')
+            question = None
+            answer = None
+            choices = []
+            
+            for line in lines:
+                line = line.strip()
+                
+                if 'question' in line.lower() and not question:
+                    patterns = [
+                        r'"question"\s*:\s*"([^"]+)"',
+                        r'question:\s*"([^"]+)"',
+                        r'question:\s*([^,\n]+)',
+                    ]
+                    for pattern in patterns:
+                        match = re.search(pattern, line, re.IGNORECASE)
+                        if match:
+                            question = match.group(1).strip()
+                            break
+                
+                elif 'answer' in line.lower() and not answer:
+                    patterns = [
+                        r'"answer"\s*:\s*"([^"]+)"',
+                        r'answer:\s*"([^"]+)"',
+                        r'answer:\s*([^,\n]+)',
+                    ]
+                    for pattern in patterns:
+                        match = re.search(pattern, line, re.IGNORECASE)
+                        if match:
+                            answer = match.group(1).strip()
+                            break
+                
+                elif any(letter in line for letter in ['A.', 'B.', 'C.', 'D.']):
+                    match = re.search(r'([A-D]\.[^"]*)', line)
+                    if match:
+                        choices.append(match.group(1).strip())
+            
+            if question and answer:
+                result = {"question": question, "answer": answer}
+                if choices:
+                    result["choices"] = choices
+                return result
+        except:
+            pass
+        return None
+    
+    def get_question_stats(self):
+        """Get statistics about generated questions"""
+        if not self.generated_questions:
+            return {}
+        
+        stats = {
+            'total_questions': len(self.generated_questions),
+            'unique_sections': len(self.used_sections),
+            'question_types': defaultdict(int),
+            'difficulty_levels': defaultdict(int),
+            'strategies_used': defaultdict(int)
+        }
+        
+        for q in self.generated_questions:
+            if 'metadata' in q:
+                metadata = q['metadata']
+                stats['question_types'][metadata.get('question_type', 'unknown')] += 1
+                stats['difficulty_levels'][metadata.get('difficulty', 'unknown')] += 1
+                stats['strategies_used'][metadata.get('strategy', 'unknown')] += 1
+        
+        return stats
+    
+    def reset_diversity_tracking(self):
+        """Reset tracking for new document or when requested"""
+        self.used_sections.clear()
+        self.generated_questions.clear()
+
 def extract_text_from_pdf(uploaded_file):
     """Extract text content from uploaded PDF file"""
     try:
@@ -49,179 +481,13 @@ def extract_text_from_pdf(uploaded_file):
         
         for page_num, page in enumerate(pdf_reader.pages):
             page_text = page.extract_text()
-            if page_text.strip():  # Only add non-empty pages
+            if page_text.strip():
                 text_content += f"\n--- Page {page_num + 1} ---\n"
                 text_content += page_text
         
         return text_content.strip()
     except Exception as e:
         st.error(f"Error extracting text from PDF: {e}")
-        return None
-
-def get_random_text_chunk(text, chunk_size=2000):
-    """Get a random chunk of text for question generation"""
-    if len(text) <= chunk_size:
-        return text
-    
-    # Split by paragraphs to avoid cutting sentences
-    paragraphs = text.split('\n\n')
-    
-    # If we have many paragraphs, select a random subset
-    if len(paragraphs) > 5:
-        start_idx = random.randint(0, max(0, len(paragraphs) - 5))
-        selected_paragraphs = paragraphs[start_idx:start_idx + 5]
-        chunk = '\n\n'.join(selected_paragraphs)
-        
-        # If chunk is still too long, truncate
-        if len(chunk) > chunk_size:
-            chunk = chunk[:chunk_size]
-            # Find last complete sentence
-            last_period = chunk.rfind('.')
-            if last_period > chunk_size * 0.8:  # Only truncate if we don't lose too much
-                chunk = chunk[:last_period + 1]
-        
-        return chunk
-    else:
-        return text[:chunk_size] if len(text) > chunk_size else text
-
-def escape_json_string(text):
-    """Properly escape a string for JSON"""
-    if not text:
-        return ""
-    
-    # Replace problematic characters
-    text = text.replace('\\', '\\\\')  # Escape backslashes first
-    text = text.replace('"', '\\"')    # Escape double quotes
-    text = text.replace('\n', '\\n')   # Escape newlines
-    text = text.replace('\r', '\\r')   # Escape carriage returns
-    text = text.replace('\t', '\\t')   # Escape tabs
-    
-    return text
-
-def clean_and_parse_json(raw_text):
-    """Parse JSON from Mistral response, handling various formats and cleaning issues"""
-    try:
-        # Remove any markdown code blocks
-        json_text = re.sub(r'```json\s*', '', raw_text)
-        json_text = re.sub(r'```\s*$', '', json_text)
-        
-        # Find the JSON object
-        json_match = re.search(r'(\{.*\})', json_text, re.DOTALL)
-        if json_match:
-            json_text = json_match.group(1)
-        
-        # Clean and parse
-        json_text = json_text.strip()
-        
-        # Try parsing first
-        try:
-            return json.loads(json_text)
-        except json.JSONDecodeError:
-            # If parsing fails, try to fix common issues
-            return fix_and_parse_json(json_text)
-            
-    except Exception as e:
-        st.warning(f"⚠️ JSON parse error: {e}")
-        st.text("Raw response:")
-        st.code(raw_text[:500] + "..." if len(raw_text) > 500 else raw_text)
-        
-        # Try to extract question and answer manually as fallback
-        return extract_question_answer_fallback(raw_text)
-
-def fix_and_parse_json(json_text):
-    """Try to fix common JSON issues and parse"""
-    try:
-        # Method 1: Try to extract and rebuild the JSON structure
-        question_match = re.search(r'"question"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', json_text)
-        answer_match = re.search(r'"answer"\s*:\s*"([^"]*)"', json_text)
-        choices_match = re.search(r'"choices"\s*:\s*\[(.*?)\]', json_text, re.DOTALL)
-        
-        if question_match and answer_match:
-            question = question_match.group(1)
-            answer = answer_match.group(1)
-            
-            result = {
-                "question": question,
-                "answer": answer
-            }
-            
-            if choices_match:
-                # Extract choices more carefully
-                choices_str = choices_match.group(1)
-                choices = []
-                
-                # Find all quoted strings in the choices array
-                choice_matches = re.findall(r'"([^"]*(?:\\.[^"]*)*)"', choices_str)
-                choices = choice_matches
-                
-                if choices:
-                    result["choices"] = choices
-            
-            return result
-            
-    except Exception as e:
-        st.error(f"Error in fix_and_parse_json: {e}")
-    
-    return None
-
-def extract_question_answer_fallback(raw_text):
-    """Fallback method to extract question and answer when JSON parsing fails"""
-    try:
-        # More robust extraction
-        lines = raw_text.split('\n')
-        question = None
-        answer = None
-        choices = []
-        
-        for line in lines:
-            line = line.strip()
-            
-            # Look for question
-            if 'question' in line.lower() and not question:
-                # Try various patterns
-                patterns = [
-                    r'"question"\s*:\s*"([^"]+)"',
-                    r'question:\s*"([^"]+)"',
-                    r'question:\s*([^,\n]+)',
-                ]
-                for pattern in patterns:
-                    match = re.search(pattern, line, re.IGNORECASE)
-                    if match:
-                        question = match.group(1).strip()
-                        break
-            
-            # Look for answer
-            elif 'answer' in line.lower() and not answer:
-                patterns = [
-                    r'"answer"\s*:\s*"([^"]+)"',
-                    r'answer:\s*"([^"]+)"',
-                    r'answer:\s*([^,\n]+)',
-                ]
-                for pattern in patterns:
-                    match = re.search(pattern, line, re.IGNORECASE)
-                    if match:
-                        answer = match.group(1).strip()
-                        break
-            
-            # Look for choices
-            elif any(letter in line for letter in ['A.', 'B.', 'C.', 'D.']):
-                match = re.search(r'([A-D]\.[^"]*)', line)
-                if match:
-                    choices.append(match.group(1).strip())
-        
-        if question and answer:
-            result = {
-                "question": question,
-                "answer": answer
-            }
-            if choices:
-                result["choices"] = choices
-            return result
-        
-        return None
-        
-    except Exception as e:
-        st.error(f"Fallback extraction failed: {e}")
         return None
 
 def get_cosine_similarity(text1, text2, model):
@@ -237,90 +503,26 @@ def get_cosine_similarity(text1, text2, model):
         st.warning(f"Error calculating similarity: {e}")
         return 0.0
 
-def generate_question(content, question_type):
-    """Generate question using Mistral API"""
-    
-    # Use a chunk of content for question generation
-    content_chunk = get_random_text_chunk(content, 2000)
-    
-    if question_type == "Multiple Choice":
-        prompt = f"""
-Create a multiple choice question based on the content below. Return ONLY a valid JSON object with no additional text.
-
-The JSON must follow this exact structure:
-{{
-  "question": "Your question here without quotes inside",
-  "choices": ["A. Option 1", "B. Option 2", "C. Option 3", "D. Option 4"],
-  "answer": "A"
-}}
-
-Rules:
-- Use simple language without apostrophes or internal quotes
-- Make sure the JSON is valid
-- Answer should be just the letter A, B, C, or D
-- Base the question on the content provided
-
-Content:
-{content_chunk[:1500]}
-"""
-    else:  # Essay question
-        prompt = f"""
-Create an essay question based on the content below. Return ONLY a valid JSON object with no additional text.
-
-The JSON must follow this exact structure:
-{{
-  "question": "Your essay question here without quotes inside",
-  "answer": "Key points that should be covered in the answer"
-}}
-
-Rules:
-- Use simple language without apostrophes or internal quotes
-- Make sure the JSON is valid
-- Base the question on the content provided
-
-Content:
-{content_chunk[:1500]}
-"""
-
-    try:
-        response = client.chat.completions.create(
-            model="mistral-small",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=500
-        )
-        
-        raw_response = response.choices[0].message.content
-        return clean_and_parse_json(raw_response)
-        
-    except Exception as e:
-        st.error(f"Error generating question: {e}")
-        return None
-
 def evaluate_essay_answer(user_answer, expected_answer, question, model):
     """Evaluate essay answer and provide detailed feedback"""
     if not user_answer.strip():
         return 0, "Please provide an answer."
     
-    # Calculate similarity score
     similarity_score = get_cosine_similarity(expected_answer, user_answer, model)
     
-    # Generate detailed feedback using Mistral (without including score in the feedback)
     feedback_prompt = f"""
-Compare the following student answer with the expected answer and provide constructive feedback.
+Compare the student answer with the expected answer and provide constructive feedback.
 
 Question: {question}
-
 Expected Answer: {expected_answer}
-
 Student Answer: {user_answer}
 
 Provide feedback in this format:
 - Strengths: What the student got right
-- Areas for improvement: What could be better or what's missing
+- Areas for improvement: What could be better or missing
 - Suggestions: Specific recommendations
 
-Do not include any score or percentage in your response."""
+Do not include any score in your response."""
     
     try:
         response = client.chat.completions.create(
@@ -334,67 +536,97 @@ Do not include any score or percentage in your response."""
         return similarity_score, detailed_feedback
         
     except Exception as e:
-        # Fallback to basic feedback if API call fails
         if similarity_score > 80:
             feedback = "Excellent! Your answer covers the key points well."
         elif similarity_score > 60:
-            feedback = "Good answer, but some important points might be missing. Review the expected answer."
+            feedback = "Good answer, but some important points might be missing."
         elif similarity_score > 40:
-            feedback = "Your answer shows some understanding, but lacks several key concepts."
+            feedback = "Your answer shows understanding but lacks several key concepts."
         else:
-            feedback = "Your answer needs significant improvement. Focus on the main concepts from the content."
+            feedback = "Your answer needs significant improvement. Focus on main concepts."
         
         return similarity_score, feedback
 
 # Initialize session state
-for key in ['current_question', 'current_answer', 'current_choices', 'pdf_content', 
-            'user_answer_mc', 'user_answer_essay', 'show_feedback', 'current_question_type']:
+session_keys = [
+    'current_question', 'current_answer', 'current_choices', 'pdf_content',
+    'user_answer_mc', 'user_answer_essay', 'show_feedback', 'current_question_type',
+    'content_analyzer', 'question_generator', 'question_metadata'
+]
+
+for key in session_keys:
     if key not in st.session_state:
         st.session_state[key] = None
 
 if 'user_answer_essay' not in st.session_state:
     st.session_state.user_answer_essay = ""
 
+# Initialize advanced components
+if 'question_generator' not in st.session_state:
+    st.session_state.question_generator = QuestionGenerator()
+
 # Main interface
 st.markdown("### 📁 Upload Learning Material")
 
-# File upload
 uploaded_file = st.file_uploader(
     "Upload a PDF file containing educational content",
     type=["pdf"],
-    help="Supported format: PDF files only"
+    help="The entire PDF will be analyzed for maximum question diversity"
 )
 
 # Process uploaded file
 if uploaded_file is not None:
     if st.session_state.get('uploaded_file_name') != uploaded_file.name:
-        # New file uploaded
-        with st.spinner("Extracting text from PDF..."):
+        with st.spinner("🔍 Analyzing PDF content comprehensively..."):
             extracted_text = extract_text_from_pdf(uploaded_file)
             
             if extracted_text:
                 st.session_state.pdf_content = extracted_text
                 st.session_state.uploaded_file_name = uploaded_file.name
-                st.success(f"✅ Successfully extracted text from {uploaded_file.name}")
-                st.info(f"📄 Document contains {len(extracted_text)} characters")
+                
+                # Initialize content analyzer
+                st.session_state.content_analyzer = ContentAnalyzer(extracted_text)
+                st.session_state.content_analyzer.analyze_content(embedding_model)
+                
+                # Reset question generator for new document
+                st.session_state.question_generator.reset_diversity_tracking()
+                
+                st.success(f"✅ Successfully analyzed {uploaded_file.name}")
+                
+                # Show analysis stats
+                analyzer = st.session_state.content_analyzer
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("📄 Total Characters", f"{len(extracted_text):,}")
+                with col2:
+                    st.metric("📑 Sections Found", len(analyzer.sections))
+                with col3:
+                    st.metric("🎯 Key Concepts", len(analyzer.key_concepts))
+                with col4:
+                    st.metric("🧠 Analysis Status", "✅ Complete")
                 
                 # Show preview
-                with st.expander("📖 Preview extracted content"):
-                    st.text(extracted_text[:1000] + "..." if len(extracted_text) > 1000 else extracted_text)
+                with st.expander("📖 Content Analysis Preview"):
+                    st.subheader("Key Concepts Identified:")
+                    st.write(", ".join(analyzer.key_concepts[:15]))
+                    
+                    st.subheader("Sample Content:")
+                    st.text(extracted_text[:800] + "..." if len(extracted_text) > 800 else extracted_text)
             else:
                 st.error("Failed to extract text from the PDF. Please try another file.")
 
-# Question generation section
-if st.session_state.pdf_content:
-    st.markdown("### 🧠 Generate Quiz Questions")
+# Enhanced question generation section
+if st.session_state.pdf_content and st.session_state.content_analyzer:
+    st.markdown("### 🧠 Generate Diverse Quiz Questions")
     
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
         question_type = st.selectbox(
-            "Select question type:",
+            "Select question format:",
             ["Multiple Choice", "Essay"],
-            help="Choose the type of question you want to practice"
+            help="Choose the format for your questions"
         )
     
     with col2:
@@ -404,32 +636,78 @@ if st.session_state.pdf_content:
             use_container_width=True
         )
     
+    with col3:
+        reset_diversity = st.button(
+            "🔄 Reset Diversity",
+            help="Reset question tracking to allow revisiting all content",
+            use_container_width=True
+        )
+    
+    if reset_diversity:
+        st.session_state.question_generator.reset_diversity_tracking()
+        st.success("✅ Diversity tracking reset! All content sections are now available again.")
+    
+    # Show question generation stats
+    stats = st.session_state.question_generator.get_question_stats()
+    if stats.get('total_questions', 0) > 0:
+        with st.expander("📊 Question Generation Statistics"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Question Types Generated:**")
+                for q_type, count in stats['question_types'].items():
+                    st.write(f"- {q_type.title()}: {count}")
+                
+                st.write("**Difficulty Levels:**")
+                for level, count in stats['difficulty_levels'].items():
+                    st.write(f"- {level.title()}: {count}")
+            
+            with col2:
+                st.write("**Content Strategies Used:**")
+                for strategy, count in stats['strategies_used'].items():
+                    st.write(f"- {strategy.title()}: {count}")
+                
+                st.metric("Sections Covered", f"{stats['unique_sections']}/{len(st.session_state.content_analyzer.sections)}")
+    
     if generate_btn:
         # Reset previous state
         st.session_state.show_feedback = False
         st.session_state.user_answer_mc = None
         st.session_state.user_answer_essay = ""
-        st.session_state.current_question_type = question_type  # Store the selected type
+        st.session_state.current_question_type = question_type
         
-        with st.spinner("🤖 Generating question..."):
-            question_data = generate_question(st.session_state.pdf_content, question_type)
+        with st.spinner("🤖 Generating diverse question using advanced AI..."):
+            question_data = st.session_state.question_generator.generate_diverse_question(
+                st.session_state.content_analyzer,
+                client,
+                question_type
+            )
             
             if question_data:
                 st.session_state.current_question = question_data.get('question')
                 st.session_state.current_answer = question_data.get('answer')
                 st.session_state.current_choices = question_data.get('choices')
-                st.success("✅ Question generated! Answer below.")
+                st.session_state.question_metadata = question_data.get('metadata', {})
+                
+                st.success("✅ Unique question generated! Answer below.")
+                
+                # Show question metadata
+                if st.session_state.question_metadata:
+                    metadata = st.session_state.question_metadata
+                    st.info(
+                        f"**Question Type:** {metadata.get('question_type', 'N/A').title()} | "
+                        f"**Difficulty:** {metadata.get('difficulty', 'N/A').title()} | "
+                        f"**Strategy:** {metadata.get('strategy', 'N/A').title()}"
+                    )
             else:
                 st.error("❌ Failed to generate question. Please try again.")
 
-# Display question and answer interface
+# Display question and answer interface (rest remains the same)
 if st.session_state.current_question:
     st.markdown("### 📝 Answer the Question")
     
-    # Display question
     st.markdown(f"**Question:** {st.session_state.current_question}")
     
-    # Answer input based on the STORED question type (not the current selection)
     if st.session_state.current_question_type == "Multiple Choice" and st.session_state.current_choices:
         st.session_state.user_answer_mc = st.radio(
             "Select your answer:",
@@ -450,7 +728,6 @@ if st.session_state.current_question:
             key="essay_textarea"
         )
         
-        # Word count
         word_count = len(st.session_state.user_answer_essay.split())
         st.caption(f"Word count: {word_count}/100")
         
@@ -462,13 +739,12 @@ if st.session_state.current_question:
         if st.button("✅ Evaluate Answer", type="primary", disabled=not answer_provided):
             st.session_state.show_feedback = True
 
-# Display feedback
+# Display feedback (rest of the feedback logic remains the same)
 if st.session_state.show_feedback:
     st.markdown("### 📊 Evaluation Results")
     
     if st.session_state.current_question_type == "Multiple Choice" and st.session_state.current_choices:
         if st.session_state.user_answer_mc:
-            # Extract letter from choice
             selected_letter = st.session_state.user_answer_mc.split('.')[0]
             correct_answer = st.session_state.current_answer
             
@@ -478,7 +754,6 @@ if st.session_state.show_feedback:
             else:
                 st.error(f"❌ Incorrect. The correct answer was: **{correct_answer}**")
             
-            # Show all options with correct answer highlighted
             st.markdown("**Answer Review:**")
             for choice in st.session_state.current_choices:
                 choice_letter = choice.split('.')[0]
@@ -499,7 +774,6 @@ if st.session_state.show_feedback:
                     embedding_model
                 )
             
-            # Display score with color coding
             if score > 80:
                 st.success(f"📈 **Score: {score}%** - Excellent!")
             elif score > 60:
@@ -507,29 +781,116 @@ if st.session_state.show_feedback:
             else:
                 st.error(f"📈 **Score: {score}%** - Needs Improvement")
             
-            # Display detailed feedback
             st.markdown("**Detailed Feedback:**")
             st.info(feedback)
             
-            # Show expected answer
             with st.expander("📚 View Expected Answer Points"):
                 st.markdown(f"**Key points to cover:** {st.session_state.current_answer}")
     
-    # Calculate question relevance
+    # Show question metadata and relevance
+    if st.session_state.question_metadata:
+        metadata = st.session_state.question_metadata
+        with st.expander("🔍 Question Details"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Section Used:** {metadata.get('section_id', 'N/A')}")
+                st.write(f"**Question Type:** {metadata.get('question_type', 'N/A').title()}")
+                st.write(f"**Difficulty Level:** {metadata.get('difficulty', 'N/A').title()}")
+            with col2:
+                st.write(f"**Selection Strategy:** {metadata.get('strategy', 'N/A').title()}")
+                if 'content_preview' in metadata:
+                    st.write(f"**Content Sample:** {metadata['content_preview']}")
+    
+    # Calculate question relevance to full content
     if embedding_model and st.session_state.pdf_content:
         relevance_score = get_cosine_similarity(
-            st.session_state.pdf_content[:1000],  # First 1000 chars for efficiency
+            st.session_state.pdf_content[:1000],
             st.session_state.current_question,
             embedding_model
         )
-        st.caption(f"🎯 Question relevance to content: {relevance_score}%")
+        st.caption(f"🎯 Question relevance to document: {relevance_score}%")
 
-# Footer
+# Advanced Features Section
+if st.session_state.content_analyzer:
+    st.markdown("---")
+    st.markdown("### 🚀 Advanced Features")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("📊 Content Analysis", use_container_width=True):
+            st.markdown("#### 📈 Document Analysis Report")
+            analyzer = st.session_state.content_analyzer
+            
+            st.write(f"**Total Sections:** {len(analyzer.sections)}")
+            st.write(f"**Average Section Length:** {sum(s['word_count'] for s in analyzer.sections) // len(analyzer.sections)} words")
+            
+            # Show section distribution
+            section_lengths = [s['word_count'] for s in analyzer.sections]
+            st.bar_chart({"Section Word Counts": section_lengths})
+            
+            st.write("**Top Key Concepts:**")
+            for i, concept in enumerate(analyzer.key_concepts[:10], 1):
+                st.write(f"{i}. {concept}")
+    
+    with col2:
+        if st.button("🎯 Question Strategy Test", use_container_width=True):
+            st.markdown("#### 🧪 Test Different Question Strategies")
+            
+            strategies = ['random', 'concept_rich', 'longest', 'semantic']
+            
+            for strategy in strategies:
+                with st.expander(f"Strategy: {strategy.title()}"):
+                    content, section_id = st.session_state.content_analyzer.get_diverse_content(
+                        used_sections=set(), strategy=strategy
+                    )
+                    st.write(f"**Section ID:** {section_id}")
+                    st.write(f"**Content Preview:** {content[:200]}...")
+    
+    with col3:
+        if st.button("🔄 Generate Question Batch", use_container_width=True):
+            st.markdown("#### 📚 Generate Multiple Questions")
+            
+            batch_size = st.slider("Number of questions:", 2, 5, 3)
+            question_format = st.selectbox("Format:", ["Multiple Choice", "Essay"], key="batch_format")
+            
+            if st.button("Generate Batch", key="batch_generate"):
+                questions_generated = []
+                
+                progress_bar = st.progress(0)
+                for i in range(batch_size):
+                    with st.spinner(f"Generating question {i+1}/{batch_size}..."):
+                        question_data = st.session_state.question_generator.generate_diverse_question(
+                            st.session_state.content_analyzer,
+                            client,
+                            question_format
+                        )
+                        
+                        if question_data:
+                            questions_generated.append(question_data)
+                        
+                        progress_bar.progress((i + 1) / batch_size)
+                
+                st.success(f"✅ Generated {len(questions_generated)} questions!")
+                
+                for i, q in enumerate(questions_generated, 1):
+                    with st.expander(f"Question {i}: {q.get('metadata', {}).get('question_type', 'Unknown').title()}"):
+                        st.write(f"**Q:** {q['question']}")
+                        if q.get('choices'):
+                            for choice in q['choices']:
+                                st.write(f"  {choice}")
+                            st.write(f"**Answer:** {q['answer']}")
+                        else:
+                            st.write(f"**Key Points:** {q['answer']}")
+
+# Footer with enhanced information
 st.markdown("---")
 st.markdown(
     """
     <div style='text-align: center; color: #666;'>
-        📚 AI Quiz Master - Powered by Mistral AI & Sentence Transformers
+        📚 Enhanced AI Quiz Master v2.0<br>
+        🚀 Features: Advanced Content Analysis • Semantic Diversity • Question Type Variety • Difficulty Levels<br>
+        🤖 Powered by Mistral AI, Sentence Transformers & NLTK
     </div>
     """,
     unsafe_allow_html=True
