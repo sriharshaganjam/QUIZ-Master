@@ -370,7 +370,7 @@ Content:
                 
         except Exception as e:
             st.warning(f"JSON parse error: {e}")
-            return self._extract_question_answer_fallback(raw_text)
+            return self._extract_Youtube_fallback(raw_text)
     
     def _fix_and_parse_json(self, json_text):
         """Fix common JSON issues"""
@@ -397,7 +397,7 @@ Content:
             pass
         return None
     
-    def _extract_question_answer_fallback(self, raw_text):
+    def _extract_Youtube_fallback(self, raw_text):
         """Fallback extraction method"""
         try:
             lines = raw_text.split('\n')
@@ -551,7 +551,7 @@ Do not include any score in your response."""
 session_keys = [
     'current_question', 'current_answer', 'current_choices', 'pdf_content',
     'user_answer_mc', 'user_answer_essay', 'show_feedback', 'current_question_type',
-    'content_analyzer', 'question_generator', 'question_metadata'
+    'content_analyzer', 'question_generator', 'question_metadata', 'uploaded_file_name' # Add uploaded_file_name to session_keys
 ]
 
 for key in session_keys:
@@ -560,6 +560,10 @@ for key in session_keys:
 
 if 'user_answer_essay' not in st.session_state:
     st.session_state.user_answer_essay = ""
+
+# Ensure question_generator is initialized before use
+if 'question_generator' not in st.session_state or st.session_state.question_generator is None:
+    st.session_state.question_generator = QuestionGenerator()
 
 # Main interface
 st.markdown("### 📁 Upload Learning Material")
@@ -571,12 +575,9 @@ uploaded_file = st.file_uploader(
 )
 
 # Process uploaded file
-# Initialize question generator if not already done
-if 'question_generator' not in st.session_state or st.session_state.question_generator is None:
-    st.session_state.question_generator = QuestionGenerator()
-
 if uploaded_file is not None:
-    if st.session_state.get('uploaded_file_name') != uploaded_file.name:
+    # Check if a new file is uploaded or if content_analyzer needs re-initialization
+    if st.session_state.get('uploaded_file_name') != uploaded_file.name or st.session_state.content_analyzer is None:
         with st.spinner("🔍 Analyzing PDF content comprehensively..."):
             extracted_text = extract_text_from_pdf(uploaded_file)
             
@@ -588,9 +589,11 @@ if uploaded_file is not None:
                 st.session_state.content_analyzer = ContentAnalyzer(extracted_text)
                 st.session_state.content_analyzer.analyze_content(embedding_model)
                 
-                # Reset question generator for new document (with safety check)
-                if st.session_state.question_generator is not None:
-                    st.session_state.question_generator.reset_diversity_tracking()
+                # Reset question generator for new document
+                # Ensure question_generator is an instance before calling its method
+                if st.session_state.question_generator is None:
+                    st.session_state.question_generator = QuestionGenerator()
+                st.session_state.question_generator.reset_diversity_tracking()
                 
                 st.success(f"✅ Successfully analyzed {uploaded_file.name}")
                 
@@ -645,34 +648,36 @@ if st.session_state.pdf_content and st.session_state.content_analyzer:
         )
     
     if reset_diversity:
-        if st.session_state.question_generator is not None:
-            st.session_state.question_generator.reset_diversity_tracking()
-            st.success("✅ Diversity tracking reset! All content sections are now available again.")
-        else:
-            st.error("Question generator not initialized.")
+        # Ensure question_generator is an instance before calling its method
+        if st.session_state.question_generator is None:
+            st.session_state.question_generator = QuestionGenerator()
+        st.session_state.question_generator.reset_diversity_tracking()
+        st.success("✅ Diversity tracking reset! All content sections are now available again.")
     
-    # Show question generation stats (with safety check)
-    if st.session_state.question_generator is not None:
-        stats = st.session_state.question_generator.get_question_stats()
-        if stats.get('total_questions', 0) > 0:
-            with st.expander("📊 Question Generation Statistics"):
-                col1, col2 = st.columns(2)
+    # Show question generation stats
+    # Ensure question_generator is an instance before calling its method
+    if st.session_state.question_generator is None:
+        st.session_state.question_generator = QuestionGenerator()
+    stats = st.session_state.question_generator.get_question_stats()
+    if stats.get('total_questions', 0) > 0:
+        with st.expander("📊 Question Generation Statistics"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Question Types Generated:**")
+                for q_type, count in stats['question_types'].items():
+                    st.write(f"- {q_type.title()}: {count}")
                 
-                with col1:
-                    st.write("**Question Types Generated:**")
-                    for q_type, count in stats['question_types'].items():
-                        st.write(f"- {q_type.title()}: {count}")
-                    
-                    st.write("**Difficulty Levels:**")
-                    for level, count in stats['difficulty_levels'].items():
-                        st.write(f"- {level.title()}: {count}")
+                st.write("**Difficulty Levels:**")
+                for level, count in stats['difficulty_levels'].items():
+                    st.write(f"- {level.title()}: {count}")
+            
+            with col2:
+                st.write("**Content Strategies Used:**")
+                for strategy, count in stats['strategies_used'].items():
+                    st.write(f"- {strategy.title()}: {count}")
                 
-                with col2:
-                    st.write("**Content Strategies Used:**")
-                    for strategy, count in stats['strategies_used'].items():
-                        st.write(f"- {strategy.title()}: {count}")
-                    
-                    st.metric("Sections Covered", f"{stats['unique_sections']}/{len(st.session_state.content_analyzer.sections)}")
+                st.metric("Sections Covered", f"{stats['unique_sections']}/{len(st.session_state.content_analyzer.sections)}")
     
     if generate_btn:
         # Reset previous state
@@ -682,6 +687,9 @@ if st.session_state.pdf_content and st.session_state.content_analyzer:
         st.session_state.current_question_type = question_type
         
         with st.spinner("🤖 Generating diverse question using advanced AI..."):
+            # Ensure question_generator is an instance before calling its method
+            if st.session_state.question_generator is None:
+                st.session_state.question_generator = QuestionGenerator()
             question_data = st.session_state.question_generator.generate_diverse_question(
                 st.session_state.content_analyzer,
                 client,
@@ -846,11 +854,15 @@ if st.session_state.content_analyzer:
             
             for strategy in strategies:
                 with st.expander(f"Strategy: {strategy.title()}"):
-                    content, section_id = st.session_state.content_analyzer.get_diverse_content(
-                        used_sections=set(), strategy=strategy
-                    )
-                    st.write(f"**Section ID:** {section_id}")
-                    st.write(f"**Content Preview:** {content[:200]}...")
+                    # Ensure content_analyzer is available before calling its method
+                    if st.session_state.content_analyzer:
+                        content, section_id = st.session_state.content_analyzer.get_diverse_content(
+                            used_sections=set(), strategy=strategy
+                        )
+                        st.write(f"**Section ID:** {section_id}")
+                        st.write(f"**Content Preview:** {content[:200]}...")
+                    else:
+                        st.warning("Please upload and analyze a PDF first to test strategies.")
     
     with col3:
         if st.button("🔄 Generate Question Batch", use_container_width=True):
@@ -865,6 +877,9 @@ if st.session_state.content_analyzer:
                 progress_bar = st.progress(0)
                 for i in range(batch_size):
                     with st.spinner(f"Generating question {i+1}/{batch_size}..."):
+                        # Ensure question_generator is an instance before calling its method
+                        if st.session_state.question_generator is None:
+                            st.session_state.question_generator = QuestionGenerator()
                         question_data = st.session_state.question_generator.generate_diverse_question(
                             st.session_state.content_analyzer,
                             client,
