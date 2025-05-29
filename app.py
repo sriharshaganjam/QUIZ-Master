@@ -551,7 +551,7 @@ Do not include any score in your response."""
 session_keys = [
     'current_question', 'current_answer', 'current_choices', 'pdf_content',
     'user_answer_mc', 'user_answer_essay', 'show_feedback', 'current_question_type',
-    'content_analyzer', 'question_generator', 'question_metadata', 'uploaded_file_name' # Add uploaded_file_name to session_keys
+    'content_analyzer', 'question_generator', 'question_metadata', 'uploaded_file_name' 
 ]
 
 for key in session_keys:
@@ -822,86 +822,6 @@ if st.session_state.show_feedback:
             embedding_model
         )
         st.caption(f"🎯 Question relevance to document: {relevance_score}%")
-
-# Advanced Features Section
-if st.session_state.content_analyzer:
-    st.markdown("---")
-    st.markdown("### 🚀 Advanced Features")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("📊 Content Analysis", use_container_width=True):
-            st.markdown("#### 📈 Document Analysis Report")
-            analyzer = st.session_state.content_analyzer
-            
-            st.write(f"**Total Sections:** {len(analyzer.sections)}")
-            st.write(f"**Average Section Length:** {sum(s['word_count'] for s in analyzer.sections) // len(analyzer.sections)} words")
-            
-            # Show section distribution
-            section_lengths = [s['word_count'] for s in analyzer.sections]
-            st.bar_chart({"Section Word Counts": section_lengths})
-            
-            st.write("**Top Key Concepts:**")
-            for i, concept in enumerate(analyzer.key_concepts[:10], 1):
-                st.write(f"{i}. {concept}")
-    
-    with col2:
-        if st.button("🎯 Question Strategy Test", use_container_width=True):
-            st.markdown("#### 🧪 Test Different Question Strategies")
-            
-            strategies = ['random', 'concept_rich', 'longest', 'semantic']
-            
-            for strategy in strategies:
-                with st.expander(f"Strategy: {strategy.title()}"):
-                    # Ensure content_analyzer is available before calling its method
-                    if st.session_state.content_analyzer:
-                        content, section_id = st.session_state.content_analyzer.get_diverse_content(
-                            used_sections=set(), strategy=strategy
-                        )
-                        st.write(f"**Section ID:** {section_id}")
-                        st.write(f"**Content Preview:** {content[:200]}...")
-                    else:
-                        st.warning("Please upload and analyze a PDF first to test strategies.")
-    
-    with col3:
-        if st.button("🔄 Generate Question Batch", use_container_width=True):
-            st.markdown("#### 📚 Generate Multiple Questions")
-            
-            batch_size = st.slider("Number of questions:", 2, 5, 3)
-            question_format = st.selectbox("Format:", ["Multiple Choice", "Essay"], key="batch_format")
-            
-            if st.button("Generate Batch", key="batch_generate"):
-                questions_generated = []
-                
-                progress_bar = st.progress(0)
-                for i in range(batch_size):
-                    with st.spinner(f"Generating question {i+1}/{batch_size}..."):
-                        # Ensure question_generator is an instance before calling its method
-                        if st.session_state.question_generator is None:
-                            st.session_state.question_generator = QuestionGenerator()
-                        question_data = st.session_state.question_generator.generate_diverse_question(
-                            st.session_state.content_analyzer,
-                            client,
-                            question_format
-                        )
-                        
-                        if question_data:
-                            questions_generated.append(question_data)
-                        
-                        progress_bar.progress((i + 1) / batch_size)
-                
-                st.success(f"✅ Generated {len(questions_generated)} questions!")
-                
-                for i, q in enumerate(questions_generated, 1):
-                    with st.expander(f"Question {i}: {q.get('metadata', {}).get('question_type', 'Unknown').title()}"):
-                        st.write(f"**Q:** {q['question']}")
-                        if q.get('choices'):
-                            for choice in q['choices']:
-                                st.write(f"  {choice}")
-                            st.write(f"**Answer:** {q['answer']}")
-                        else:
-                            st.write(f"**Key Points:** {q['answer']}")
 
 # Footer with enhanced information
 st.markdown("---")
